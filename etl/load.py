@@ -31,7 +31,6 @@ def load_to_mongodb(data: pd.DataFrame) -> None:
     Load transformed Upstox data to MongoDB.
     Uses instrument_key as the unique identifier for upserts.
     """
-    print("Loading data to MongoDB...")
     try:
         # Connect to MongoDB Atlas
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
@@ -44,74 +43,59 @@ def load_to_mongodb(data: pd.DataFrame) -> None:
         db = client[MONGO_DB]
         collection = db[MONGO_COLLECTION]
         
+        # Convert DataFrame to records and insert
         records = data.to_dict('records')
+        inserted_count = 0
         for record in records:
-            collection.update_one(
+            result = collection.update_one(
                 {'instrument_key': record['instrument_key']},
                 {'$set': record},
                 upsert=True
             )
-        print(f"Successfully loaded {len(records)} records to MongoDB")
-            
+            if result.upserted_id or result.modified_count > 0:
+                inserted_count += 1
+        
+        print(f"Successfully loaded {inserted_count} records to MongoDB")
+        client.close()
+        
     except Exception as e:
-        print(f"Warning: MongoDB Atlas connection failed: {str(e)}")
-        print("Hint: Check your internet connection and MongoDB Atlas credentials")
-        print("Make sure your IP address is whitelisted in the MongoDB Atlas network access settings")
-    finally:
-        if 'client' in locals():
-            client.close()
+        print(f"Warning: MongoDB Atlas load failed: {str(e)}")
+        print("Continuing with SQLite load...")
 
 def load_to_sqlite(data: pd.DataFrame) -> None:
     """
-    Load transformed Dhan data to SQLite.
-    Creates the table if it doesn't exist and replaces existing data.
+    Load transformed Dhan data to SQLite database.
+    Creates the table if it doesn't exist.
     """
-    print("Loading data to SQLite...")
+    db_path = os.getenv("SQLITE_DB_PATH", "database/nse_instruments.db")
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
-    try:
-        # Get database path from environment variable or use default
-        db_path = os.getenv("SQLITE_DB_PATH", "database/nse_instruments.db")
-        
-        # Ensure database directory exists
-        db_dir = os.path.dirname(db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
-            
-        conn = sqlite3.connect(db_path)
-        
-        # Create table with all required columns
-        conn.execute('''
+    with sqlite3.connect(db_path) as conn:
+        # Create table if it doesn't exist
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS dhan_nse (
             exchange TEXT,
-            instrument_key TEXT,
+            trading_symbol TEXT PRIMARY KEY,
             symbol_name TEXT,
             security_id TEXT,
             short_name TEXT,
             name TEXT,
-            isin TEXT,
-            trading_symbol TEXT PRIMARY KEY
+            isin TEXT
         )
-        ''')
+        """)
         
-        # Use pandas to_sql with replace mode
-        data.to_sql('dhan_nse', conn, if_exists='replace', index=False)
-        conn.commit()
+        # Clear existing data
+        conn.execute("DELETE FROM dhan_nse")
+        
+        # Insert new data
+        data.to_sql('dhan_nse', conn, if_exists='append', index=False)
         print(f"Successfully loaded {len(data)} records to SQLite")
-        
-    except Exception as e:
-        print(f"Error loading to SQLite: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
-def load_data(upstox_data: pd.DataFrame, dhan_data: pd.DataFrame) -> None:
+# Legacy function for backward compatibility
+def load_data(upstox_df: pd.DataFrame, dhan_df: pd.DataFrame) -> None:
     """
-    Load both transformed datasets to their respective databases.
+    Legacy function that loads both datasets.
+    Retained for backward compatibility.
     """
-    try:
-        load_to_mongodb(upstox_data)
-        load_to_sqlite(dhan_data)
-    except Exception as e:
-        print(f"An error occurred while loading data: {str(e)}")
+    load_to_mongodb(upstox_df)
+    load_to_sqlite(dhan_df)
